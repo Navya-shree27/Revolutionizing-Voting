@@ -1,24 +1,37 @@
-# Revolutionizing-Voting
-import io
-import os
-from google.cloud import vision
+import cv2
+import face_recognition
 
-# Set up Google Vision API
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "your_service_account.json"
-client = vision.ImageAnnotatorClient()
+def load_and_encodes(image_path):
+    # Load the image
+    image = face_recognition.load_image_file(image_path)
+    # Get the face encodings for any faces in the image
+    encodings = face_recognition.face_encodings(image)
+    if len(encodings) > 0:
+        return encodings[0]
+    else:
+        return None
 
-def extract_text_from_image(image_path):
-    with io.open(image_path, 'rb') as image_file:
-        content = image_file.read()
-    
-    image = vision.Image(content=content)
-    response = client.text_detection(image=image)
-    texts = response.text_annotations
+def compare_faces(stored_image_path, given_image_path):
+    # Load and encode the stored image
+    stored_encoding = load_and_encodes(stored_image_path)
+    if stored_encoding is None:
+        print("No face found in the stored image.")
+        return
 
-    if texts:
-        return texts[0].description  # Extracted text
-    return "No text found"
+    # Load and encode the given image
+    given_encoding = load_and_encodes(given_image_path)
+    if given_encoding is None:
+        print("No face found in the given image.")
+        return
 
-# Example Usage
-text = extract_text_from_image("voter_id_sample.jpg")
-print("Extracted Text:", text)
+    # Compare faces
+    results = face_recognition.compare_faces([stored_encoding], given_encoding)
+    if results[0]:
+        print("The faces match!")
+    else:
+        print("The faces do not match.")
+
+if __name__ == "__main__":
+    stored_image_path = 'path_to_stored_image.jpg'
+    given_image_path = 'path_to_given_image.jpg'
+    compare_faces(stored_image_path, given_image_path)
