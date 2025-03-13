@@ -1,0 +1,158 @@
+import cv2
+import pytesseract
+import numpy as np
+import qrcode
+import re
+from deepface import DeepFace
+from flask import Flask, render_template, send_file
+
+# Set Tesseract OCR path (only required on Windows)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"  # Update path if needed
+
+# Load Haar cascade for face detection
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+# Flask App for QR Code Scanning
+app = Flask(__name__)
+
+### 🔄 Step 1: Extract Text from Voter ID (OCR) ###
+def extract_text(voter_id_path):
+    print("🔄 Processing Voter ID for text extraction...")
+    image = cv2.imread(voter_id_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Use Tesseract to extract text
+    extracted_text = pytesseract.image_to_string(gray).strip()
+    
+    print("📄 Extracted Text:\n", extracted_text if extracted_text else "⚠️ No text extracted!")
+
+    return extracted_text if extracted_text else "No text found"
+
+### 🖼️ Step 2: Extract and Enhance Face from Voter ID ###
+def extract_face(image_path, output_path):
+    print("🔍 Detecting and enhancing face from Voter ID...")
+
+    image = cv2.imread(image_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply sharpening filter
+    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharp_gray = cv2.filter2D(gray, -1, sharpen_kernel)
+
+    # Increase contrast
+    sharp_gray = cv2.convertScaleAbs(sharp_gray, alpha=1.5, beta=30)
+
+    # Detect face
+    faces = face_cascade.detectMultiScale(sharp_gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+
+    if len(faces) == 0:
+        print("❌ No face detected in Voter ID!")
+        return None
+
+    x, y, w, h = faces[0]
+    face = image[y:y+h, x:x+w]
+
+    # Resize to 160x160 for better face recognition
+    face = cv2.resize(face, (160, 160), interpolation=cv2.INTER_CUBIC)
+
+    cv2.imwrite(output_path, face)
+    print(f"✅ Stored face saved at: {output_path}")
+
+    return output_path
+
+### 📷 Step 3: Capture High-Quality Live Image ###
+def capture_live_image(output_path):
+    print("📷 Opening camera... Please look at the camera.")
+
+    cap = cv2.VideoCapture(0)  # Open webcam
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Error: Camera not detected!")
+            break
+
+        # Apply brightness and contrast enhancements
+        frame = cv2.convertScaleAbs(frame, alpha=1.5, beta=30)
+
+        cv2.imshow("Live Capture - Press 's' to save", frame)
+
+        # Press 's' to save the image
+        if cv2.waitKey(1) & 0xFF == ord('s'):
+            frame = cv2.resize(frame, (160, 160), interpolation=cv2.INTER_CUBIC)
+            cv2.imwrite(output_path, frame)
+            print(f"✅ Live scanned face saved at: {output_path}")
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    return output_path
+
+### 🔍 Step 4: Compare Faces Using DeepFace ###
+def compare_faces(stored_face, live_face, model_name="ArcFace", distance_metric="euclidean_l2"):
+    print(f"🔬 Comparing faces using {model_name} with {distance_metric} metric...")
+    try:
+        result = DeepFace.verify(stored_face, live_face, model_name=model_name, distance_metric=distance_metric)
+        return result["verified"]
+    except Exception as e:
+        print(f"⚠️ Error: {e}")
+        return False
+
+### 🔗 Step 5: Generate QR Code with Voter ID ###
+def generate_qr_code(voter_name, voter_id, extracted_text, face_path):
+    computer_ip = "192.168.173.231"  # Replace with your actual IP
+    qr_data = f"http://{computer_ip}:5000/display?voter_name={voter_name}&voter_id={voter_id}"
+    
+    qr = qrcode.make(qr_data)
+    qr_code_path = f"{voter_name.replace(' ', '_')}_qr.png"
+    qr.save(qr_code_path)
+
+    print(f"✅ QR Code generated: {qr_code_path}")
+    print(f"📲 Scan this QR Code to view voter details: {qr_data}")
+
+    return qr_code_path
+
+### 🚀 Main Execution ###
+if __name__ == "__main__":
+    voter_id_path = "voter_id.jpg"
+    stored_face_path = "stored_face.jpg"
+    live_face_path = "live_face.jpg"
+
+    # Step 1: Extract text from voter ID
+    voter_text = extract_text(voter_id_path)
+
+    # Step 2: Detect and store the face from the voter ID
+    stored_face = extract_face(voter_id_path, stored_face_path)
+
+    if stored_face:
+        # Step 3: Capture live face image
+        live_face = capture_live_image(live_face_path)
+
+        if live_face and compare_faces(stored_face, live_face):
+            voter_name = "Voter_Name"  # Placeholder (You can extract from text)
+            voter_id = "12345"  # Placeholder (Extract from text)
+
+            # Generate QR Code
+            generate_qr_code(voter_name, voter_id, voter_text, stored_face)
+        else:
+            print("❌ Face did not match. No QR code will be generated.")
+
+### 🌐 Step 6: Flask App to Display Extracted Data ###
+@app.route("/display")
+def display_voter():
+    voter_name = request.args.get("voter_name", "Unknown")
+    voter_id = request.args.get("voter_id", "00000")
+
+    return f"""
+    <h1>Voter Details</h1>
+    <p><b>Name:</b> {voter_name}</p>
+    <p><b>Voter ID:</b> {voter_id}</p>
+    <img src='/get_image' width='200'/>
+    """
+
+@app.route("/get_image")
+def get_image():
+    return send_file("stored_face.jpg", mimetype="image/jpeg")
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
