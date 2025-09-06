@@ -1,0 +1,144 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import base64
+import json
+import os
+import requests
+
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
+
+# NOTE: Replace with your actual API Key
+# This is a placeholder. You MUST replace this with your actual API key
+# for your project to function.
+OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
+
+@app.route('/verify', methods=['POST'])
+def verify_voter():
+    try:
+        data = request.json
+        voter_id_image_b64 = data.get('voterIdImage')
+        live_photo_b64 = data.get('livePhoto')
+
+        if not voter_id_image_b64 or not live_photo_b64:
+            return jsonify({"status": "error", "message": "Missing image data."}), 400
+
+        # Decode base64 images
+        voter_id_image = base64.b64decode(voter_id_image_b64.split(',')[1])
+        live_photo = base64.b64decode(live_photo_b64.split(',')[1])
+
+        # Prepare for API call
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}"
+        }
+
+        # Prompt for the multimodal model
+        prompt = """
+        You are an AI-powered voter verification system. You will receive two images: an image of a voter ID card and a live photo of the voter.
+        
+        Your task is to:
+        1.  Extract the voter's name and voter ID number from the ID card.
+        2.  Assess the quality of the ID card image for signs of tampering (e.g., blurry text, misaligned photo, inconsistent fonts).
+        3.  Compare the face in the live photo with the face on the voter ID card.
+        4.  Based on your analysis, determine if the verification is successful.
+
+        Respond with a JSON object in the following format. Ensure all fields are always present.
+        {
+          "verification_status": "SUCCESS" or "FAILURE",
+          "reason": "a concise explanation for the status",
+          "voter_details": {
+            "name": "Extracted Voter Name",
+            "voter_id": "Extracted Voter ID"
+          }
+        }
+        
+        Example JSON for success:
+        {
+          "verification_status": "SUCCESS",
+          "reason": "Face match is high and document appears valid.",
+          "voter_details": {
+            "name": "Jane Doe",
+            "voter_id": "ABC12345"
+          }
+        }
+
+        Example JSON for failure:
+        {
+          "verification_status": "FAILURE",
+          "reason": "Low face match confidence between live photo and document photo.",
+          "voter_details": {
+            "name": "John Smith",
+            "voter_id": "XYZ54321"
+          }
+        }
+        
+        Now, analyze the provided images and return the JSON response.
+        """
+
+        payload = {
+            "model": "gemini-2.5-flash-preview-05-20",
+            "messages": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "image": {
+                                "base64": base64.b64encode(voter_id_image).decode('utf-8'),
+                                "mimeType": "image/jpeg"
+                            }
+                        },
+                        {
+                            "image": {
+                                "base64": base64.b64encode(live_photo).decode('utf-8'),
+                                "mimeType": "image/jpeg"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "verification_status": {
+                            "type": "STRING",
+                            "enum": ["SUCCESS", "FAILURE"]
+                        },
+                        "reason": { "type": "STRING" },
+                        "voter_details": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "name": { "type": "STRING" },
+                                "voter_id": { "type": "STRING" }
+                            }
+                        }
+                    },
+                    "propertyOrdering": ["verification_status", "reason", "voter_details"]
+                }
+            }
+        }
+
+        response = requests.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=" + OPENAI_API_KEY, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()
+        
+        api_response = response.json()
+        result_json_str = api_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+        result = json.loads(result_json_str)
+        
+        return jsonify(result)
+
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred: {http_err} - Response: {http_err.response.text}")
+        return jsonify({"status": "error", "message": f"API request failed: {http_err.response.text}"}), 500
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return jsonify({"status": "error", "message": "An unexpected server error occurred."}), 500
+
+if __name__ == '__main__':
+    # To run this Flask app locally, ensure you have Flask and requests installed.
+    # pip install Flask requests
+    # Remember to replace 'YOUR_OPENAI_API_KEY' with your actual key.
+    app.run(debug=True, port=5000)
